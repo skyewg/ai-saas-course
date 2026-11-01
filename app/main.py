@@ -2,9 +2,9 @@ import asyncio
 import os
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 from dotenv import load_dotenv
 
 
@@ -16,10 +16,23 @@ if not bot_token:
 
 dispatcher = Dispatcher()
 
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="🚶 Знайти місця поруч")]],
+    resize_keyboard=True,
+)
+
 
 @dispatcher.message(CommandStart())
 async def start_command(message: Message) -> None:
-    await message.answer("Привіт! Я готовий до роботи 👋")
+    await message.answer(
+        "Привіт! Натисни кнопку нижче, щоб почати пошук.",
+        reply_markup=main_keyboard,
+    )
+
+
+@dispatcher.message(F.text == "🚶 Знайти місця поруч")
+async def find_nearby_places(message: Message) -> None:
+    await message.answer("Надішли свою геолокацію, щоб я знайшов місця поруч.")
 
 
 @dispatcher.message(Command("help"))
