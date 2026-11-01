@@ -1,0 +1,12 @@
+services:
+  bot:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/app
+    command: ["watchfiles", "--filter", "python", "python main.py", "/app"]
+    init: true
