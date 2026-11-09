@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -44,8 +45,10 @@ async def help_command(message: Message) -> None:
 
 async def main() -> None:
     bot = Bot(token=bot_token)
+    logging.info("Бот працює")
     await dispatcher.start_polling(bot)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
