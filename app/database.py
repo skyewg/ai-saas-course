@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    select,
 )
 from sqlalchemy.dialects.postgresql import insert
 
@@ -59,6 +60,16 @@ transactions = Table(
         name="fk_transactions_category_owner",
     ),
     CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+)
+
+incomes = Table(
+    "incomes",
+    metadata,
+    Column("id", BigInteger, Identity(), primary_key=True),
+    Column("user_id", BigInteger, ForeignKey("users.id"), nullable=False),
+    Column("amount", Numeric(12, 2), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint("amount > 0", name="ck_incomes_amount_positive"),
 )
 
 
@@ -106,6 +117,53 @@ def _save_expense(connection, telegram_id: int, username: str | None, amount: De
 def save_expense(telegram_id: int, username: str | None, amount: Decimal, category: str) -> None:
     with get_engine().begin() as connection:
         _save_expense(connection, telegram_id, username, amount, category)
+
+
+def get_transactions() -> list[dict]:
+    query = (
+        select(
+            transactions.c.id,
+            transactions.c.user_id,
+            transactions.c.category_id,
+            categories.c.name.label("category"),
+            transactions.c.amount,
+            transactions.c.created_at,
+        )
+        .select_from(transactions.join(categories, transactions.c.category_id == categories.c.id))
+        .order_by(transactions.c.created_at.desc(), transactions.c.id.desc())
+    )
+    with get_engine().connect() as connection:
+        rows = connection.execute(query).mappings().all()
+
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "category_id": row["category_id"],
+            "category": row["category"],
+            "amount": str(row["amount"]),
+            "created_at": row["created_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+def _get_summary(connection) -> dict[str, str]:
+    total_income = select(func.coalesce(func.sum(incomes.c.amount), 0)).scalar_subquery()
+    total_expense = select(func.coalesce(func.sum(transactions.c.amount), 0)).scalar_subquery()
+    row = connection.execute(
+        select(total_income.label("income"), total_expense.label("expense"))
+    ).one()
+    return {
+        "total_incom": format(row.income, ".2f"),
+        "total_expense": format(row.expense, ".2f"),
+        "balance": format(row.income - row.expense, ".2f"),
+    }
+
+
+def get_summary() -> dict[str, str]:
+    with get_engine().connect() as connection:
+        return _get_summary(connection)
 
 
 if __name__ == "__main__":
