@@ -167,6 +167,21 @@ def save_web_transaction(operation_type: str, amount: Decimal, category: str, tr
         return _save_web_transaction(connection, operation_type, amount, category, transaction_date)
 
 
+def _delete_transaction(connection, transaction_id: int, operation_type: str) -> bool:
+    if operation_type not in ("income", "expense"):
+        raise ValueError("Invalid transaction type")
+    table = incomes if operation_type == "income" else transactions
+    deleted_id = connection.execute(
+        table.delete().where(table.c.id == transaction_id).returning(table.c.id)
+    ).scalar_one_or_none()
+    return deleted_id is not None
+
+
+def delete_transaction(transaction_id: int, operation_type: str) -> bool:
+    with get_engine().begin() as connection:
+        return _delete_transaction(connection, transaction_id, operation_type)
+
+
 def get_transactions() -> list[dict]:
     expenses = (
         select(

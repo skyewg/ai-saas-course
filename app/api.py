@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
-from database import get_summary, get_transactions, save_web_transaction
+from database import delete_transaction, get_summary, get_transactions, save_web_transaction
 
 
 def validate_transaction(data: object) -> tuple[str, Decimal, str, date]:
@@ -101,10 +101,30 @@ async def summary_handler(request: web.Request) -> web.Response:
     return web.json_response(summary)
 
 
+async def delete_transaction_handler(request: web.Request) -> web.Response:
+    transaction_id_text = request.match_info["id"]
+    operation_types = request.query.getall("type", [])
+    if (not re.fullmatch(r"[0-9]{1,19}", transaction_id_text)
+            or not 0 < int(transaction_id_text) <= 9223372036854775807
+            or len(operation_types) != 1 or operation_types[0] not in ("income", "expense")):
+        return web.json_response({"error": "Вкажіть коректний ID і тип транзакції."}, status=400)
+
+    try:
+        deleted = await asyncio.to_thread(delete_transaction, int(transaction_id_text), operation_types[0])
+    except Exception as error:
+        logging.error("Не вдалося видалити транзакцію: %s", type(error).__name__)
+        return web.json_response({"error": "Не вдалося видалити транзакцію."}, status=503)
+
+    if not deleted:
+        return web.json_response({"error": "Транзакцію не знайдено."}, status=404)
+    return web.Response(status=204)
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/transaction", transactions_handler, allow_head=False)
     app.router.add_post("/api/transaction", create_transaction_handler)
+    app.router.add_delete("/api/transactions/{id}", delete_transaction_handler)
     app.router.add_get("/api/summary", summary_handler, allow_head=False)
     return app
 

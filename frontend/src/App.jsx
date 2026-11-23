@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 const initialState = { status: 'loading', data: null };
 
@@ -10,6 +10,7 @@ function Icon({ name, size = 20 }) {
     up: <><path d="M12 20V5M6.5 10.5 12 5l5.5 5.5" /></>,
     refresh: <><path d="M20 11a8 8 0 0 0-14-5L4 8" /><path d="M4 4v4h4M4 13a8 8 0 0 0 14 5l2-2" /><path d="M20 20v-4h-4" /></>,
     list: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>,
+    trash: <><path d="M4 7h16M10 4h4M6.5 7l.8 12a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7M10 11v5M14 11v5" /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -58,14 +59,37 @@ function Metric({ icon, title, value, tone, description }) {
 export function Summary({ state, onRetry }) {
   if (state.status === 'loading') return <div className="metric-grid" aria-live="polite" aria-busy="true">{[1, 2, 3].map((n) => <div className="metric skeleton-card" key={n}><span className="skeleton short" /><span className="skeleton large" /><span className="skeleton medium" /></div>)}<span className="sr-only">Завантажуємо підсумок</span></div>;
   if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
-  return <div className="metric-grid"><Metric icon="wallet" title="Загальний баланс" value={state.data.balance} tone="balance" description="Доходи мінус витрати" /><Metric icon="down" title="Усього доходів" value={state.data.total_incom} tone="income" description="За весь час" /><Metric icon="up" title="Усього витрат" value={state.data.total_expense} tone="expense" description="За весь час" /></div>;
+  return <div className="metric-grid"><Metric icon="wallet" title="Загальний баланс" value={state.data.balance} tone="balance" description="Доходи мінус витрати" /><Metric icon="up" title="Усього доходів" value={state.data.total_incom} tone="income" description="За весь час" /><Metric icon="down" title="Усього витрат" value={state.data.total_expense} tone="expense" description="За весь час" /></div>;
 }
 
-export function Transactions({ state, onRetry }) {
+export function Transactions({ state, onRetry, onDelete }) {
   if (state.status === 'loading') return <div className="state-message loading-state" role="status"><span className="spinner" /> Завантажуємо транзакції…</div>;
   if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
   if (!state.data.length) return <div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>Транзакцій поки немає</strong><p>Додайте першу транзакцію через форму або витрату через Telegram-бота.</p></div>;
-  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th></tr></thead><tbody>{state.data.map((item) => <tr key={`${item.type}-${item.id}`}><td><div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div></td><td className="muted">{formatDate(item.date || item.created_at)}</td><td className="muted">#{item.user_id}</td><td className="align-right"><strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong></td></tr>)}</tbody></table></div>;
+  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th><th><span className="sr-only">Дії</span></th></tr></thead><tbody>{state.data.map((item) => <tr key={`${item.type}-${item.id}`}><td><div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div></td><td className="muted">{formatDate(item.date || item.created_at)}</td><td className="muted">#{item.user_id}</td><td className="align-right"><strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong></td><td className="delete-cell"><button type="button" className="delete-icon-button" aria-label={`Видалити ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Видалити транзакцію" onClick={() => onDelete(item)}><Icon name="trash" size={18} /></button></td></tr>)}</tbody></table></div>;
+}
+
+function DeleteDialog({ transaction, deleting, error, onCancel, onConfirm }) {
+  const dialogRef = useRef(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    dialog.showModal();
+    return () => { if (dialog.open) dialog.close(); };
+  }, []);
+
+  function handleCancel(event) {
+    event.preventDefault();
+    if (!deleting) onCancel();
+  }
+
+  return <dialog ref={dialogRef} className="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description" onCancel={handleCancel}>
+    <div className="delete-dialog-icon"><Icon name="trash" size={22} /></div>
+    <h2 id="delete-title">Видалити транзакцію?</h2>
+    <p id="delete-description">Ви збираєтесь видалити {transaction.type === 'income' ? 'дохід' : 'витрату'} <strong>«{transaction.category}» на суму {formatAmount(transaction.amount)}</strong> від {formatDate(transaction.date || transaction.created_at)}. Цю дію не можна скасувати.</p>
+    {error && <p role="alert" className="delete-error">{error}</p>}
+    <div className="delete-dialog-actions"><button type="button" className="cancel-delete-button" onClick={onCancel} disabled={deleting} autoFocus>Скасувати</button><button type="button" className="confirm-delete-button" onClick={onConfirm} disabled={deleting}>{deleting ? 'Видаляємо…' : 'Підтвердити'}</button></div>
+  </dialog>;
 }
 
 function localDateToday() {
@@ -136,7 +160,36 @@ export default function App() {
   const [summary, setSummary] = useState(initialState);
   const [transactions, setTransactions] = useState(initialState);
   const [requestId, setRequestId] = useState(0);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+  const deletingRef = useRef(false);
   const refresh = () => setRequestId((value) => value + 1);
+
+  function openDeleteDialog(transaction) {
+    setDeleteError('');
+    setSelectedTransaction(transaction);
+  }
+
+  async function confirmDelete() {
+    if (!selectedTransaction || deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      const { id, type } = selectedTransaction;
+      const response = await fetch(`/api/transactions/${encodeURIComponent(id)}?type=${encodeURIComponent(type)}`, { method: 'DELETE' });
+      if (response.status === 404) throw new Error('Транзакцію вже не знайдено. Оновіть дані.');
+      if (!response.ok) throw new Error('Не вдалося видалити транзакцію. Спробуйте ще раз.');
+      setSelectedTransaction(null);
+      refresh();
+    } catch (error) {
+      setDeleteError(error instanceof TypeError ? 'Не вдалося з’єднатися із сервером.' : error.message);
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -159,7 +212,8 @@ export default function App() {
       <main className="content"><div className="page-heading"><div><div className="eyebrow"><span /> ФІНАНСИ ПІД КОНТРОЛЕМ</div><h1>Огляд фінансів<span>.</span></h1><p>Доходи, витрати та всі ваші транзакції в одному місці.</p></div><button className="refresh-button" onClick={refresh}><Icon name="refresh" size={17} /> Оновити дані</button></div>
         <section aria-labelledby="summary-heading"><div className="section-heading"><div><h2 id="summary-heading">Підсумок</h2><p>Загальна картина за весь час</p></div><span className="section-period">ЗА ВЕСЬ ЧАС</span></div><Summary state={summary} onRetry={refresh} /></section>
         <TransactionForm onSaved={refresh} />
-        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} /></div></section>
+        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} /></div></section>
+        {selectedTransaction && <DeleteDialog transaction={selectedTransaction} deleting={deleting} error={deleteError} onCancel={() => setSelectedTransaction(null)} onConfirm={confirmDelete} />}
         <footer className="page-footer"><span>© Finansovik</span><span>Дані з вашої бази · Локальний перегляд</span></footer>
       </main>
     </div>
