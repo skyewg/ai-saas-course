@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
-from database import delete_transaction, get_summary, get_transactions, save_web_transaction
+from database import delete_transaction, get_summary, get_transactions, save_web_transaction, update_transaction
 
 
 def validate_transaction(data: object) -> tuple[str, Decimal, str, date]:
@@ -120,11 +120,45 @@ async def delete_transaction_handler(request: web.Request) -> web.Response:
     return web.Response(status=204)
 
 
+async def update_transaction_handler(request: web.Request) -> web.Response:
+    transaction_id_text = request.match_info["id"]
+    original_types = request.query.getall("type", [])
+    if (not re.fullmatch(r"[0-9]{1,19}", transaction_id_text)
+            or not 0 < int(transaction_id_text) <= 9223372036854775807
+            or len(original_types) != 1 or original_types[0] not in ("income", "expense")):
+        return web.json_response({"error": "Вкажіть коректний ID і поточний тип транзакції."}, status=400)
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Надішліть дані у форматі JSON."}, status=415)
+    try:
+        data = json.loads(await request.text(), parse_float=Decimal)
+        operation_type, amount, category, transaction_date = validate_transaction(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return web.json_response({"error": "Некоректний JSON."}, status=400)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+    try:
+        updated_id = await asyncio.to_thread(
+            update_transaction, int(transaction_id_text), original_types[0],
+            operation_type, amount, category, transaction_date,
+        )
+    except Exception as error:
+        logging.error("Не вдалося оновити транзакцію: %s", type(error).__name__)
+        return web.json_response({"error": "Не вдалося оновити транзакцію."}, status=503)
+    if updated_id is None:
+        return web.json_response({"error": "Транзакцію не знайдено."}, status=404)
+    return web.json_response({
+        "id": updated_id, "type": operation_type, "amount": format(amount, ".2f"),
+        "category": category, "date": transaction_date.isoformat(),
+    })
+
+
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/transaction", transactions_handler, allow_head=False)
     app.router.add_post("/api/transaction", create_transaction_handler)
     app.router.add_delete("/api/transactions/{id}", delete_transaction_handler)
+    app.router.add_put("/api/transactions/{id}", update_transaction_handler)
     app.router.add_get("/api/summary", summary_handler, allow_head=False)
     return app
 

@@ -182,6 +182,49 @@ def delete_transaction(transaction_id: int, operation_type: str) -> bool:
         return _delete_transaction(connection, transaction_id, operation_type)
 
 
+def _update_transaction(connection, transaction_id: int, original_type: str, operation_type: str,
+                        amount: Decimal, category: str, transaction_date: date) -> int | None:
+    if original_type not in ("income", "expense") or operation_type not in ("income", "expense"):
+        raise ValueError("Invalid transaction type")
+    source = incomes if original_type == "income" else transactions
+    target = incomes if operation_type == "income" else transactions
+    original = connection.execute(
+        select(source.c.user_id, source.c.created_at)
+        .where(source.c.id == transaction_id)
+        .with_for_update()
+    ).one_or_none()
+    if original is None:
+        return None
+
+    category_insert = insert(categories).values(user_id=original.user_id, name=category)
+    category_id = connection.execute(
+        category_insert.on_conflict_do_update(
+            constraint="uq_categories_user_name",
+            set_={"name": category_insert.excluded.name},
+        ).returning(categories.c.id)
+    ).scalar_one()
+    values = {"amount": amount, "category_id": category_id, "transaction_date": transaction_date}
+
+    if source is target:
+        return connection.execute(
+            source.update().where(source.c.id == transaction_id).values(**values).returning(source.c.id)
+        ).scalar_one()
+
+    new_id = connection.execute(
+        target.insert().values(user_id=original.user_id, created_at=original.created_at, **values)
+        .returning(target.c.id)
+    ).scalar_one()
+    connection.execute(source.delete().where(source.c.id == transaction_id))
+    return new_id
+
+
+def update_transaction(transaction_id: int, original_type: str, operation_type: str,
+                       amount: Decimal, category: str, transaction_date: date) -> int | None:
+    with get_engine().begin() as connection:
+        return _update_transaction(connection, transaction_id, original_type, operation_type,
+                                   amount, category, transaction_date)
+
+
 def get_transactions() -> list[dict]:
     expenses = (
         select(
