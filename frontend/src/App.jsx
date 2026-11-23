@@ -27,7 +27,7 @@ const validSummary = (data) => data && typeof data === 'object' &&
   ['total_incom', 'total_expense', 'balance'].every((key) => isAmount(data[key]));
 const validTransactions = (data) => Array.isArray(data) && data.every((item) =>
   item && typeof item === 'object' && item.id != null && item.user_id != null &&
-  item.category_id != null && typeof item.category === 'string' &&
+  (item.type === 'income' || item.type === 'expense') && typeof item.category === 'string' &&
   isAmount(item.amount) && typeof item.created_at === 'string');
 
 // Format decimal strings directly, keeping the exact amount returned by the API.
@@ -38,9 +38,13 @@ function formatAmount(value) {
 }
 
 function formatDate(value) {
-  const date = new Date(value);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T12:00:00`)
+    : new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('uk-UA', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
+  const options = { day: 'numeric', month: 'short', year: 'numeric' };
+  if (value.includes('T') && !/^\d{4}-\d{2}-\d{2}$/.test(value)) Object.assign(options, { hour: '2-digit', minute: '2-digit' });
+  return new Intl.DateTimeFormat('uk-UA', options).format(date);
 }
 
 function ErrorState({ onRetry }) {
@@ -60,8 +64,8 @@ export function Summary({ state, onRetry }) {
 export function Transactions({ state, onRetry }) {
   if (state.status === 'loading') return <div className="state-message loading-state" role="status"><span className="spinner" /> Завантажуємо транзакції…</div>;
   if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
-  if (!state.data.length) return <div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>Транзакцій поки немає</strong><p>Додайте першу витрату через Telegram-бота.</p></div>;
-  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата і час</th><th>ID користувача</th><th className="align-right">Сума</th></tr></thead><tbody>{state.data.map((item) => <tr key={item.id}><td><div className="category-cell"><span className="category-avatar"><Icon name="up" size={16} /></span><span><strong>{item.category}</strong><small>Витрата</small></span></div></td><td className="muted">{formatDate(item.created_at)}</td><td className="muted">#{item.user_id}</td><td className="align-right"><strong className="expense-amount">−{formatAmount(item.amount)}</strong></td></tr>)}</tbody></table></div>;
+  if (!state.data.length) return <div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>Транзакцій поки немає</strong><p>Додайте першу транзакцію через форму або витрату через Telegram-бота.</p></div>;
+  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th></tr></thead><tbody>{state.data.map((item) => <tr key={`${item.type}-${item.id}`}><td><div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div></td><td className="muted">{formatDate(item.date || item.created_at)}</td><td className="muted">#{item.user_id}</td><td className="align-right"><strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong></td></tr>)}</tbody></table></div>;
 }
 
 function localDateToday() {
@@ -72,26 +76,58 @@ function localDateToday() {
   return `${year}-${month}-${day}`;
 }
 
-export function TransactionForm() {
+export function TransactionForm({ onSaved }) {
   const [date, setDate] = useState('');
-  const [notice, setNotice] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
-    if (!date) setDate(localDateToday());
-    setNotice(true);
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const amount = String(values.get('amount')).trim().replace(',', '.');
+    const category = String(values.get('category')).trim();
+    if (!/^[0-9]{1,10}(?:\.[0-9]{1,2})?$/.test(amount)) {
+      setError('Вкажіть невід’ємну суму з не більше ніж двома знаками після коми.');
+      return;
+    }
+    if (!category || category.length > 100 || !/\p{L}/u.test(category) || !/^[\p{L}\p{M} '’ʼ-]+$/u.test(category)) {
+      setError('Категорія має містити лише літери, пробіли, дефіс або апостроф.');
+      return;
+    }
+    setError('');
+    setNotice('');
+    setSaving(true);
+    try {
+      const response = await fetch('/api/transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: values.get('type'), amount, category, date: date || localDateToday() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не вдалося зберегти транзакцію.');
+      form.reset();
+      setDate('');
+      setNotice('Транзакцію збережено.');
+      onSaved();
+    } catch (error) {
+      setError(error.message || 'Не вдалося зберегти транзакцію.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return <section className="transaction-form-section" aria-labelledby="new-transaction-heading">
     <div className="section-heading"><div><h2 id="new-transaction-heading">Нова транзакція</h2><p>Вкажіть дані доходу або витрати</p></div></div>
-    <form className="transaction-form" onSubmit={handleSubmit} onInput={() => setNotice(false)}>
+    <form className="transaction-form" onSubmit={handleSubmit} onInput={() => { setNotice(''); setError(''); }}>
       <div className="form-grid">
         <div className="form-field"><label htmlFor="transaction-type">Тип операції</label><select id="transaction-type" name="type" defaultValue="expense"><option value="expense">Витрата</option><option value="income">Дохід</option></select></div>
-        <div className="form-field"><label htmlFor="transaction-amount">Сума</label><input id="transaction-amount" name="amount" type="number" min="0.01" max="9999999999.99" step="0.01" placeholder="0,00" required /></div>
+        <div className="form-field"><label htmlFor="transaction-amount">Сума</label><input id="transaction-amount" name="amount" type="number" min="0" max="9999999999.99" step="0.01" placeholder="0,00" required /></div>
         <div className="form-field"><label htmlFor="transaction-category">Категорія</label><input id="transaction-category" name="category" type="text" maxLength="100" placeholder="Наприклад, кава" required /></div>
         <div className="form-field"><label htmlFor="transaction-date">Дата <span>(необов’язково)</span></label><input id="transaction-date" name="date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /><small>Якщо не обрати, використовується поточна дата.</small></div>
       </div>
-      <div className="form-actions"><button type="submit" className="save-button">Зберегти</button>{notice && <p role="status" className="form-notice">Форма ще не підключена до збереження транзакцій.</p>}</div>
+      <div className="form-actions"><button type="submit" className="save-button" disabled={saving}>{saving ? 'Зберігаємо…' : 'Зберегти'}</button>{notice && <p role="status" className="form-notice">{notice}</p>}{error && <p role="alert" className="form-error">{error}</p>}</div>
     </form>
   </section>;
 }
@@ -122,8 +158,8 @@ export default function App() {
     <div className="main-area"><header className="topbar"><div className="breadcrumb"><span>Finansovik</span><span className="breadcrumb-separator">/</span><strong>Огляд</strong></div><span className="topbar-caption">ФІНАНСОВА ПАНЕЛЬ</span></header>
       <main className="content"><div className="page-heading"><div><div className="eyebrow"><span /> ФІНАНСИ ПІД КОНТРОЛЕМ</div><h1>Огляд фінансів<span>.</span></h1><p>Доходи, витрати та всі ваші транзакції в одному місці.</p></div><button className="refresh-button" onClick={refresh}><Icon name="refresh" size={17} /> Оновити дані</button></div>
         <section aria-labelledby="summary-heading"><div className="section-heading"><div><h2 id="summary-heading">Підсумок</h2><p>Загальна картина за весь час</p></div><span className="section-period">ЗА ВЕСЬ ЧАС</span></div><Summary state={summary} onRetry={refresh} /></section>
-        <TransactionForm />
-        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі всіх записаних витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} /></div></section>
+        <TransactionForm onSaved={refresh} />
+        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} /></div></section>
         <footer className="page-footer"><span>© Finansovik</span><span>Дані з вашої бази · Локальний перегляд</span></footer>
       </main>
     </div>

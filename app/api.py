@@ -1,10 +1,84 @@
 import asyncio
 import logging
 import os
+import json
+import re
+import unicodedata
+from datetime import date, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
-from database import get_summary, get_transactions
+from database import get_summary, get_transactions, save_web_transaction
+
+
+def validate_transaction(data: object) -> tuple[str, Decimal, str, date]:
+    if not isinstance(data, dict):
+        raise ValueError("Надішліть дані у форматі JSON-об’єкта.")
+
+    operation_type = data.get("type")
+    types = {"expense": "expense", "income": "income", "витрата": "expense", "витрати": "expense", "дохід": "income"}
+    if not isinstance(operation_type, str) or operation_type.strip().casefold() not in types:
+        raise ValueError("Тип операції має бути income або expense.")
+    operation_type = types[operation_type.strip().casefold()]
+
+    amount_input = data.get("amount")
+    if isinstance(amount_input, bool) or not isinstance(amount_input, (str, int, Decimal)):
+        raise ValueError("Вкажіть невід’ємну суму з не більше ніж двома знаками після коми.")
+    amount_text = str(amount_input).strip().replace(",", ".")
+    if not re.fullmatch(r"[0-9]{1,10}(?:\.[0-9]{1,2})?", amount_text):
+        raise ValueError("Вкажіть невід’ємну суму з не більше ніж двома знаками після коми.")
+    amount = Decimal(amount_text)
+
+    category = data.get("category")
+    if not isinstance(category, str):
+        raise ValueError("Категорія має містити лише літери.")
+    category = category.strip().casefold()
+    if (not category or len(category) > 100 or not any(char.isalpha() for char in category)
+            or any(not (unicodedata.category(char)[0] in ("L", "M") or char in " '-’ʼ") for char in category)):
+        raise ValueError("Категорія має містити лише літери, пробіли, дефіс або апостроф (до 100 символів).")
+
+    date_input = data.get("date")
+    if date_input in (None, ""):
+        transaction_date = datetime.now(ZoneInfo("Europe/Kyiv")).date()
+    else:
+        if not isinstance(date_input, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_input):
+            raise ValueError("Вкажіть дату у форматі РРРР-ММ-ДД.")
+        try:
+            transaction_date = date.fromisoformat(date_input)
+        except ValueError:
+            raise ValueError("Вкажіть дійсну дату у форматі РРРР-ММ-ДД.") from None
+
+    return operation_type, amount, category, transaction_date
+
+
+async def create_transaction_handler(request: web.Request) -> web.Response:
+    if request.content_type != "application/json":
+        return web.json_response({"error": "Надішліть дані у форматі JSON."}, status=415)
+    try:
+        data = json.loads(await request.text(), parse_float=Decimal)
+        operation_type, amount, category, transaction_date = validate_transaction(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return web.json_response({"error": "Некоректний JSON."}, status=400)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+
+    try:
+        transaction_id = await asyncio.to_thread(
+            save_web_transaction, operation_type, amount, category, transaction_date
+        )
+    except Exception as error:
+        logging.error("Не вдалося зберегти транзакцію: %s", type(error).__name__)
+        return web.json_response({"error": "Не вдалося зберегти транзакцію."}, status=503)
+
+    return web.json_response({
+        "id": transaction_id,
+        "type": operation_type,
+        "amount": format(amount, ".2f"),
+        "category": category,
+        "date": transaction_date.isoformat(),
+    }, status=201)
 
 
 async def transactions_handler(request: web.Request) -> web.Response:
@@ -30,6 +104,7 @@ async def summary_handler(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/api/transaction", transactions_handler, allow_head=False)
+    app.router.add_post("/api/transaction", create_transaction_handler)
     app.router.add_get("/api/summary", summary_handler, allow_head=False)
     return app
 

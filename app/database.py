@@ -1,5 +1,6 @@
 import os
 from decimal import Decimal
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,9 +10,11 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    Date,
     ForeignKey,
     ForeignKeyConstraint,
     Identity,
+    Index,
     MetaData,
     Numeric,
     String,
@@ -19,7 +22,10 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
+    literal,
     select,
+    text,
+    union_all,
 )
 from sqlalchemy.dialects.postgresql import insert
 
@@ -30,10 +36,12 @@ users = Table(
     "users",
     metadata,
     Column("id", BigInteger, Identity(), primary_key=True),
-    Column("telegram_id", BigInteger, nullable=False, unique=True),
+    Column("telegram_id", BigInteger, nullable=True, unique=True),
     Column("username", String(100)),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
+
+Index("uq_users_local_web", users.c.username, unique=True, postgresql_where=users.c.telegram_id.is_(None))
 
 categories = Table(
     "categories",
@@ -54,12 +62,13 @@ transactions = Table(
     Column("category_id", BigInteger, nullable=False),
     Column("amount", Numeric(12, 2), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("transaction_date", Date, nullable=False, server_default=text("(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Kyiv')::date")),
     ForeignKeyConstraint(
         ["category_id", "user_id"],
         ["categories.id", "categories.user_id"],
         name="fk_transactions_category_owner",
     ),
-    CheckConstraint("amount > 0", name="ck_transactions_amount_positive"),
+    CheckConstraint("amount >= 0", name="ck_transactions_amount_positive"),
 )
 
 incomes = Table(
@@ -67,9 +76,16 @@ incomes = Table(
     metadata,
     Column("id", BigInteger, Identity(), primary_key=True),
     Column("user_id", BigInteger, ForeignKey("users.id"), nullable=False),
+    Column("category_id", BigInteger),
     Column("amount", Numeric(12, 2), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    CheckConstraint("amount > 0", name="ck_incomes_amount_positive"),
+    Column("transaction_date", Date, nullable=False, server_default=text("(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Kyiv')::date")),
+    ForeignKeyConstraint(
+        ["category_id", "user_id"],
+        ["categories.id", "categories.user_id"],
+        name="fk_incomes_category_owner",
+    ),
+    CheckConstraint("amount >= 0", name="ck_incomes_amount_positive"),
 )
 
 
@@ -119,30 +135,80 @@ def save_expense(telegram_id: int, username: str | None, amount: Decimal, catego
         _save_expense(connection, telegram_id, username, amount, category)
 
 
+def _save_web_transaction(connection, operation_type: str, amount: Decimal, category: str, transaction_date: date) -> int:
+    user_insert = insert(users).values(telegram_id=None, username="__local_web__")
+    user_id = connection.execute(
+        user_insert.on_conflict_do_update(
+            index_elements=[users.c.username],
+            index_where=users.c.telegram_id.is_(None),
+            set_={"username": user_insert.excluded.username},
+        ).returning(users.c.id)
+    ).scalar_one()
+
+    category_insert = insert(categories).values(user_id=user_id, name=category)
+    category_id = connection.execute(
+        category_insert.on_conflict_do_update(
+            constraint="uq_categories_user_name",
+            set_={"name": category_insert.excluded.name},
+        ).returning(categories.c.id)
+    ).scalar_one()
+
+    table = incomes if operation_type == "income" else transactions
+    return connection.execute(
+        table.insert().values(
+            user_id=user_id, category_id=category_id, amount=amount,
+            transaction_date=transaction_date,
+        ).returning(table.c.id)
+    ).scalar_one()
+
+
+def save_web_transaction(operation_type: str, amount: Decimal, category: str, transaction_date: date) -> int:
+    with get_engine().begin() as connection:
+        return _save_web_transaction(connection, operation_type, amount, category, transaction_date)
+
+
 def get_transactions() -> list[dict]:
-    query = (
+    expenses = (
         select(
             transactions.c.id,
+            literal("expense").label("type"),
             transactions.c.user_id,
             transactions.c.category_id,
             categories.c.name.label("category"),
             transactions.c.amount,
             transactions.c.created_at,
+            transactions.c.transaction_date.label("date"),
         )
         .select_from(transactions.join(categories, transactions.c.category_id == categories.c.id))
-        .order_by(transactions.c.created_at.desc(), transactions.c.id.desc())
     )
+    income_rows = (
+        select(
+            incomes.c.id,
+            literal("income").label("type"),
+            incomes.c.user_id,
+            incomes.c.category_id,
+            func.coalesce(categories.c.name, "Без категорії").label("category"),
+            incomes.c.amount,
+            incomes.c.created_at,
+            incomes.c.transaction_date.label("date"),
+        )
+        .select_from(incomes.outerjoin(categories, incomes.c.category_id == categories.c.id))
+    )
+    combined = union_all(expenses, income_rows).subquery()
+    query = select(combined).order_by(combined.c.date.desc(), combined.c.created_at.desc(), combined.c.id.desc())
     with get_engine().connect() as connection:
         rows = connection.execute(query).mappings().all()
 
     return [
         {
             "id": row["id"],
+            "type": row["type"],
             "user_id": row["user_id"],
             "category_id": row["category_id"],
             "category": row["category"],
             "amount": str(row["amount"]),
             "created_at": row["created_at"].isoformat(),
+            "date": row["date"].isoformat(),
         }
         for row in rows
     ]
