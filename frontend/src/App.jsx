@@ -11,6 +11,7 @@ function Icon({ name, size = 20 }) {
     refresh: <><path d="M20 11a8 8 0 0 0-14-5L4 8" /><path d="M4 4v4h4M4 13a8 8 0 0 0 14 5l2-2" /><path d="M20 20v-4h-4" /></>,
     list: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>,
     trash: <><path d="M4 7h16M10 4h4M6.5 7l.8 12a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7M10 11v5M14 11v5" /></>,
+    edit: <><path d="M4 20l4.2-.8L19.5 7.9a2.1 2.1 0 0 0-3-3L5.2 16.2 4 20zM14.8 6.6l2.6 2.6" /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -62,11 +63,76 @@ export function Summary({ state, onRetry }) {
   return <div className="metric-grid"><Metric icon="wallet" title="Загальний баланс" value={state.data.balance} tone="balance" description="Доходи мінус витрати" /><Metric icon="up" title="Усього доходів" value={state.data.total_incom} tone="income" description="За весь час" /><Metric icon="down" title="Усього витрат" value={state.data.total_expense} tone="expense" description="За весь час" /></div>;
 }
 
-export function Transactions({ state, onRetry, onDelete }) {
+function validateFields(amount, category) {
+  if (!/^[0-9]{1,10}(?:\.[0-9]{1,2})?$/.test(amount)) return 'Вкажіть невід’ємну суму з не більше ніж двома знаками після коми.';
+  if (!category || category.length > 100 || !/\p{L}/u.test(category) || !/^[\p{L}\p{M} '’ʼ-]+$/u.test(category)) return 'Категорія має містити лише літери, пробіли, дефіс або апостроф.';
+  return '';
+}
+
+export function Transactions({ state, onRetry, onDelete, onUpdated }) {
+  const [editing, setEditing] = useState(null);
+  const [values, setValues] = useState(null);
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+
+  useEffect(() => {
+    if (state.status === 'success' && editing && !state.data.some((item) => item.id === editing.id && item.type === editing.type)) {
+      setEditing(null);
+      setError('');
+    }
+  }, [state, editing]);
+
+  function startEdit(item) {
+    setEditing(item);
+    setValues({ type: item.type, amount: item.amount, category: item.category, date: item.date || '' });
+    setError('');
+  }
+
+  function changeValue(field, value) {
+    setValues((previous) => ({ ...previous, [field]: value }));
+    setError('');
+  }
+
+  async function saveEdit() {
+    if (!editing || savingRef.current) return;
+    const amount = values.amount.trim().replace(',', '.');
+    const category = values.category.trim();
+    const validationError = validateFields(amount, category);
+    if (validationError) { setError(validationError); return; }
+    savingRef.current = true;
+    setSaving(true);
+    setError('');
+    try {
+      const response = await fetch(`/api/transactions/${encodeURIComponent(editing.id)}?type=${encodeURIComponent(editing.type)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: values.type, amount, category, date: values.date || localDateToday() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Не вдалося оновити транзакцію.');
+      setEditing(null);
+      onUpdated();
+    } catch (error) {
+      setError(error instanceof TypeError ? 'Не вдалося з’єднатися із сервером.' : error.message);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
   if (state.status === 'loading') return <div className="state-message loading-state" role="status"><span className="spinner" /> Завантажуємо транзакції…</div>;
   if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
   if (!state.data.length) return <div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>Транзакцій поки немає</strong><p>Додайте першу транзакцію через форму або витрату через Telegram-бота.</p></div>;
-  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th><th><span className="sr-only">Дії</span></th></tr></thead><tbody>{state.data.map((item) => <tr key={`${item.type}-${item.id}`}><td><div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div></td><td className="muted">{formatDate(item.date || item.created_at)}</td><td className="muted">#{item.user_id}</td><td className="align-right"><strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong></td><td className="delete-cell"><button type="button" className="delete-icon-button" aria-label={`Видалити ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Видалити транзакцію" onClick={() => onDelete(item)}><Icon name="trash" size={18} /></button></td></tr>)}</tbody></table></div>;
+  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th><th><span className="sr-only">Дії</span></th></tr></thead><tbody>{state.data.map((item) => {
+    const isEditing = editing && editing.id === item.id && editing.type === item.type;
+    return <React.Fragment key={`${item.type}-${item.id}`}><tr>
+      <td>{isEditing ? <div className="inline-category"><select aria-label="Тип операції" value={values.type} disabled={saving} onChange={(event) => changeValue('type', event.target.value)}><option value="expense">Витрата</option><option value="income">Дохід</option></select><input aria-label="Категорія" type="text" maxLength="100" value={values.category} disabled={saving} onChange={(event) => changeValue('category', event.target.value)} /></div> : <div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div>}</td>
+      <td className="muted">{isEditing ? <input className="inline-input" aria-label="Дата операції" type="date" value={values.date} disabled={saving} onChange={(event) => changeValue('date', event.target.value)} /> : formatDate(item.date || item.created_at)}</td>
+      <td className="muted">#{item.user_id}</td>
+      <td className="align-right">{isEditing ? <input className="inline-input inline-amount" aria-label="Сума" type="number" min="0" max="9999999999.99" step="0.01" value={values.amount} disabled={saving} onChange={(event) => changeValue('amount', event.target.value)} /> : <strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong>}</td>
+      <td className="delete-cell"><div className="row-actions">{isEditing ? <><button type="button" className="inline-save-button" onClick={saveEdit} disabled={saving}>{saving ? 'Зберігаємо…' : 'Зберегти'}</button><button type="button" className="inline-cancel-button" onClick={() => { setEditing(null); setError(''); }} disabled={saving}>Скасувати</button></> : <><button type="button" className="edit-icon-button" aria-label={`Редагувати ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Редагувати транзакцію" disabled={Boolean(editing)} onClick={() => startEdit(item)}><Icon name="edit" size={18} /></button><button type="button" className="delete-icon-button" aria-label={`Видалити ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Видалити транзакцію" disabled={Boolean(editing)} onClick={() => onDelete(item)}><Icon name="trash" size={18} /></button></>}</div></td>
+    </tr>{isEditing && error && <tr className="inline-error-row"><td colSpan="5"><p role="alert">{error}</p></td></tr>}</React.Fragment>;
+  })}</tbody></table></div>;
 }
 
 function DeleteDialog({ transaction, deleting, error, onCancel, onConfirm }) {
@@ -112,14 +178,8 @@ export function TransactionForm({ onSaved }) {
     const values = new FormData(form);
     const amount = String(values.get('amount')).trim().replace(',', '.');
     const category = String(values.get('category')).trim();
-    if (!/^[0-9]{1,10}(?:\.[0-9]{1,2})?$/.test(amount)) {
-      setError('Вкажіть невід’ємну суму з не більше ніж двома знаками після коми.');
-      return;
-    }
-    if (!category || category.length > 100 || !/\p{L}/u.test(category) || !/^[\p{L}\p{M} '’ʼ-]+$/u.test(category)) {
-      setError('Категорія має містити лише літери, пробіли, дефіс або апостроф.');
-      return;
-    }
+    const validationError = validateFields(amount, category);
+    if (validationError) { setError(validationError); return; }
     setError('');
     setNotice('');
     setSaving(true);
@@ -212,7 +272,7 @@ export default function App() {
       <main className="content"><div className="page-heading"><div><div className="eyebrow"><span /> ФІНАНСИ ПІД КОНТРОЛЕМ</div><h1>Огляд фінансів<span>.</span></h1><p>Доходи, витрати та всі ваші транзакції в одному місці.</p></div><button className="refresh-button" onClick={refresh}><Icon name="refresh" size={17} /> Оновити дані</button></div>
         <section aria-labelledby="summary-heading"><div className="section-heading"><div><h2 id="summary-heading">Підсумок</h2><p>Загальна картина за весь час</p></div><span className="section-period">ЗА ВЕСЬ ЧАС</span></div><Summary state={summary} onRetry={refresh} /></section>
         <TransactionForm onSaved={refresh} />
-        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} /></div></section>
+        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} onUpdated={refresh} /></div></section>
         {selectedTransaction && <DeleteDialog transaction={selectedTransaction} deleting={deleting} error={deleteError} onCancel={() => setSelectedTransaction(null)} onConfirm={confirmDelete} />}
         <footer className="page-footer"><span>© Finansovik</span><span>Дані з вашої бази · Локальний перегляд</span></footer>
       </main>
