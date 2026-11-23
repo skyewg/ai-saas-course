@@ -70,6 +70,7 @@ function validateFields(amount, category) {
 }
 
 export function Transactions({ state, onRetry, onDelete, onUpdated }) {
+  const [filter, setFilter] = useState('all');
   const [editing, setEditing] = useState(null);
   const [values, setValues] = useState(null);
   const [error, setError] = useState('');
@@ -120,10 +121,12 @@ export function Transactions({ state, onRetry, onDelete, onUpdated }) {
     }
   }
 
-  if (state.status === 'loading') return <div className="state-message loading-state" role="status"><span className="spinner" /> Завантажуємо транзакції…</div>;
-  if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
-  if (!state.data.length) return <div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>Транзакцій поки немає</strong><p>Додайте першу транзакцію через форму або витрату через Telegram-бота.</p></div>;
-  return <div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th><th><span className="sr-only">Дії</span></th></tr></thead><tbody>{state.data.map((item) => {
+  const heading = <div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><div className="transaction-filters" role="group" aria-label="Фільтр транзакцій" title={editing ? 'Завершіть редагування, щоб змінити фільтр' : undefined}>{[['all', 'Усі транзакції'], ['income', 'Усі доходи'], ['expense', 'Усі витрати']].map(([value, label]) => <button key={value} type="button" className={`transaction-filter${filter === value ? ' active' : ''}`} aria-pressed={filter === value} disabled={Boolean(editing)} onClick={() => setFilter(value)}>{label}</button>)}</div><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div>;
+  if (state.status === 'loading') return <>{heading}<div className="state-message loading-state" role="status"><span className="spinner" /> Завантажуємо транзакції…</div></>;
+  if (state.status === 'error') return <>{heading}<ErrorState onRetry={onRetry} /></>;
+  const visibleTransactions = filter === 'all' ? state.data : state.data.filter((item) => item.type === filter);
+  if (!visibleTransactions.length) return <>{heading}<div className="empty-state"><span className="empty-icon"><Icon name="list" size={24} /></span><strong>{filter === 'income' ? 'Доходів поки немає' : filter === 'expense' ? 'Витрат поки немає' : 'Транзакцій поки немає'}</strong><p>Додайте транзакцію через форму або витрату через Telegram-бота.</p></div></>;
+  return <>{heading}<div className="table-scroll"><table><thead><tr><th>Назва категорії</th><th>Дата</th><th>ID користувача</th><th className="align-right">Сума</th><th><span className="sr-only">Дії</span></th></tr></thead><tbody>{visibleTransactions.map((item) => {
     const isEditing = editing && editing.id === item.id && editing.type === item.type;
     return <React.Fragment key={`${item.type}-${item.id}`}><tr>
       <td>{isEditing ? <div className="inline-category"><select aria-label="Тип операції" value={values.type} disabled={saving} onChange={(event) => changeValue('type', event.target.value)}><option value="expense">Витрата</option><option value="income">Дохід</option></select><input aria-label="Категорія" type="text" maxLength="100" value={values.category} disabled={saving} onChange={(event) => changeValue('category', event.target.value)} /></div> : <div className="category-cell"><span className="category-avatar"><Icon name={item.type === 'income' ? 'down' : 'up'} size={16} /></span><span><strong>{item.category}</strong><small>{item.type === 'income' ? 'Дохід' : 'Витрата'}</small></span></div>}</td>
@@ -132,7 +135,7 @@ export function Transactions({ state, onRetry, onDelete, onUpdated }) {
       <td className="align-right">{isEditing ? <input className="inline-input inline-amount" aria-label="Сума" type="number" min="0" max="9999999999.99" step="0.01" value={values.amount} disabled={saving} onChange={(event) => changeValue('amount', event.target.value)} /> : <strong className="expense-amount">{item.type === 'income' ? '+' : '−'}{formatAmount(item.amount)}</strong>}</td>
       <td className="delete-cell"><div className="row-actions">{isEditing ? <><button type="button" className="inline-save-button" onClick={saveEdit} disabled={saving}>{saving ? 'Зберігаємо…' : 'Зберегти'}</button><button type="button" className="inline-cancel-button" onClick={() => { setEditing(null); setError(''); }} disabled={saving}>Скасувати</button></> : <><button type="button" className="edit-icon-button" aria-label={`Редагувати ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Редагувати транзакцію" disabled={Boolean(editing)} onClick={() => startEdit(item)}><Icon name="edit" size={18} /></button><button type="button" className="delete-icon-button" aria-label={`Видалити ${item.type === 'income' ? 'дохід' : 'витрату'}: ${item.category}, ${formatAmount(item.amount)}`} title="Видалити транзакцію" disabled={Boolean(editing)} onClick={() => onDelete(item)}><Icon name="trash" size={18} /></button></>}</div></td>
     </tr>{isEditing && error && <tr className="inline-error-row"><td colSpan="5"><p role="alert">{error}</p></td></tr>}</React.Fragment>;
-  })}</tbody></table></div>;
+  })}</tbody></table></div></>;
 }
 
 function DeleteDialog({ transaction, deleting, error, onCancel, onConfirm }) {
@@ -272,7 +275,7 @@ export default function App() {
       <main className="content"><div className="page-heading"><div><div className="eyebrow"><span /> ФІНАНСИ ПІД КОНТРОЛЕМ</div><h1>Огляд фінансів<span>.</span></h1><p>Доходи, витрати та всі ваші транзакції в одному місці.</p></div><button className="refresh-button" onClick={refresh}><Icon name="refresh" size={17} /> Оновити дані</button></div>
         <section aria-labelledby="summary-heading"><div className="section-heading"><div><h2 id="summary-heading">Підсумок</h2><p>Загальна картина за весь час</p></div><span className="section-period">ЗА ВЕСЬ ЧАС</span></div><Summary state={summary} onRetry={refresh} /></section>
         <TransactionForm onSaved={refresh} />
-        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">{count} записів</span>}</div><div className="table-card"><div className="table-card-heading"><div><span className="table-card-icon"><Icon name="list" size={18} /></span><div><strong>Усі транзакції</strong><small>Найновіші спочатку</small></div></div><span className="table-label">ІСТОРІЯ</span></div><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} onUpdated={refresh} /></div></section>
+        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">Усього записів: {count}</span>}</div><div className="table-card"><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} onUpdated={refresh} /></div></section>
         {selectedTransaction && <DeleteDialog transaction={selectedTransaction} deleting={deleting} error={deleteError} onCancel={() => setSelectedTransaction(null)} onConfirm={confirmDelete} />}
         <footer className="page-footer"><span>© Finansovik</span><span>Дані з вашої бази · Локальний перегляд</span></footer>
       </main>
