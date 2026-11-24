@@ -155,8 +155,8 @@ async def update_transaction_handler(request: web.Request) -> web.Response:
 
 def create_app() -> web.Application:
     app = web.Application()
-    app.router.add_get("/api/transaction", transactions_handler, allow_head=False)
-    app.router.add_post("/api/transaction", create_transaction_handler)
+    app.router.add_get("/api/transactions", transactions_handler, allow_head=False)
+    app.router.add_post("/api/transactions", create_transaction_handler)
     app.router.add_delete("/api/transactions/{id}", delete_transaction_handler)
     app.router.add_put("/api/transactions/{id}", update_transaction_handler)
     app.router.add_get("/api/summary", summary_handler, allow_head=False)

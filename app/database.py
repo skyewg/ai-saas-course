@@ -279,7 +279,7 @@ def _get_summary(connection) -> dict[str, str]:
         select(total_income.label("income"), total_expense.label("expense"))
     ).one()
     return {
-        "total_incom": format(row.income, ".2f"),
+        "total_income": format(row.income, ".2f"),
         "total_expense": format(row.expense, ".2f"),
         "balance": format(row.income - row.expense, ".2f"),
     }
