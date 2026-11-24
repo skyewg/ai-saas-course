@@ -1,6 +1,6 @@
 import os
-from datetime import date
 from decimal import Decimal
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
@@ -80,7 +80,11 @@ incomes = Table(
     Column("amount", Numeric(12, 2), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("transaction_date", Date, nullable=False, server_default=text("(CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Kyiv')::date")),
-    ForeignKeyConstraint(["category_id", "user_id"], ["categories.id", "categories.user_id"], name="fk_incomes_category_owner"),
+    ForeignKeyConstraint(
+        ["category_id", "user_id"],
+        ["categories.id", "categories.user_id"],
+        name="fk_incomes_category_owner",
+    ),
     CheckConstraint("amount >= 0", name="ck_incomes_amount_positive"),
 )
 
@@ -131,24 +135,31 @@ def save_expense(telegram_id: int, username: str | None, amount: Decimal, catego
         _save_expense(connection, telegram_id, username, amount, category)
 
 
-def _category_for_user(connection, user_id: int, name: str) -> int:
-    statement = insert(categories).values(user_id=user_id, name=name)
-    return connection.execute(
-        statement.on_conflict_do_update(constraint="uq_categories_user_name", set_={"name": statement.excluded.name})
-        .returning(categories.c.id)
-    ).scalar_one()
-
-
 def _save_web_transaction(connection, operation_type: str, amount: Decimal, category: str, transaction_date: date) -> int:
-    statement = insert(users).values(telegram_id=None, username="__local_web__")
+    user_insert = insert(users).values(telegram_id=None, username="__local_web__")
     user_id = connection.execute(
-        statement.on_conflict_do_update(index_elements=[users.c.username], index_where=users.c.telegram_id.is_(None),
-                                        set_={"username": statement.excluded.username}).returning(users.c.id)
+        user_insert.on_conflict_do_update(
+            index_elements=[users.c.username],
+            index_where=users.c.telegram_id.is_(None),
+            set_={"username": user_insert.excluded.username},
+        ).returning(users.c.id)
     ).scalar_one()
-    category_id = _category_for_user(connection, user_id, category)
+
+    category_insert = insert(categories).values(user_id=user_id, name=category)
+    category_id = connection.execute(
+        category_insert.on_conflict_do_update(
+            constraint="uq_categories_user_name",
+            set_={"name": category_insert.excluded.name},
+        ).returning(categories.c.id)
+    ).scalar_one()
+
     table = incomes if operation_type == "income" else transactions
-    return connection.execute(table.insert().values(user_id=user_id, category_id=category_id, amount=amount,
-                                                     transaction_date=transaction_date).returning(table.c.id)).scalar_one()
+    return connection.execute(
+        table.insert().values(
+            user_id=user_id, category_id=category_id, amount=amount,
+            transaction_date=transaction_date,
+        ).returning(table.c.id)
+    ).scalar_one()
 
 
 def save_web_transaction(operation_type: str, amount: Decimal, category: str, transaction_date: date) -> int:
@@ -160,7 +171,10 @@ def _delete_transaction(connection, transaction_id: int, operation_type: str) ->
     if operation_type not in ("income", "expense"):
         raise ValueError("Invalid transaction type")
     table = incomes if operation_type == "income" else transactions
-    return connection.execute(table.delete().where(table.c.id == transaction_id).returning(table.c.id)).scalar_one_or_none() is not None
+    deleted_id = connection.execute(
+        table.delete().where(table.c.id == transaction_id).returning(table.c.id)
+    ).scalar_one_or_none()
+    return deleted_id is not None
 
 
 def delete_transaction(transaction_id: int, operation_type: str) -> bool:
@@ -174,17 +188,32 @@ def _update_transaction(connection, transaction_id: int, original_type: str, ope
         raise ValueError("Invalid transaction type")
     source = incomes if original_type == "income" else transactions
     target = incomes if operation_type == "income" else transactions
-    original = connection.execute(select(source.c.user_id, source.c.created_at)
-                                  .where(source.c.id == transaction_id).with_for_update()).one_or_none()
+    original = connection.execute(
+        select(source.c.user_id, source.c.created_at)
+        .where(source.c.id == transaction_id)
+        .with_for_update()
+    ).one_or_none()
     if original is None:
         return None
-    category_id = _category_for_user(connection, original.user_id, category)
+
+    category_insert = insert(categories).values(user_id=original.user_id, name=category)
+    category_id = connection.execute(
+        category_insert.on_conflict_do_update(
+            constraint="uq_categories_user_name",
+            set_={"name": category_insert.excluded.name},
+        ).returning(categories.c.id)
+    ).scalar_one()
     values = {"amount": amount, "category_id": category_id, "transaction_date": transaction_date}
+
     if source is target:
-        return connection.execute(source.update().where(source.c.id == transaction_id).values(**values)
-                                  .returning(source.c.id)).scalar_one()
-    new_id = connection.execute(target.insert().values(user_id=original.user_id, created_at=original.created_at, **values)
-                                .returning(target.c.id)).scalar_one()
+        return connection.execute(
+            source.update().where(source.c.id == transaction_id).values(**values).returning(source.c.id)
+        ).scalar_one()
+
+    new_id = connection.execute(
+        target.insert().values(user_id=original.user_id, created_at=original.created_at, **values)
+        .returning(target.c.id)
+    ).scalar_one()
     connection.execute(source.delete().where(source.c.id == transaction_id))
     return new_id
 
@@ -192,19 +221,37 @@ def _update_transaction(connection, transaction_id: int, original_type: str, ope
 def update_transaction(transaction_id: int, original_type: str, operation_type: str,
                        amount: Decimal, category: str, transaction_date: date) -> int | None:
     with get_engine().begin() as connection:
-        return _update_transaction(connection, transaction_id, original_type, operation_type, amount, category, transaction_date)
+        return _update_transaction(connection, transaction_id, original_type, operation_type,
+                                   amount, category, transaction_date)
 
 
 def get_transactions() -> list[dict]:
-    expenses = (select(transactions.c.id, literal("expense").label("type"), transactions.c.user_id,
-                       transactions.c.category_id, categories.c.name.label("category"), transactions.c.amount,
-                       transactions.c.created_at, transactions.c.transaction_date.label("date"))
+    expenses = (
+        select(
+            transactions.c.id,
+            literal("expense").label("type"),
+            transactions.c.user_id,
+            transactions.c.category_id,
+            categories.c.name.label("category"),
+            transactions.c.amount,
+            transactions.c.created_at,
+            transactions.c.transaction_date.label("date"),
+        )
         .select_from(transactions.join(categories, transactions.c.category_id == categories.c.id))
     )
-    income_rows = (select(incomes.c.id, literal("income").label("type"), incomes.c.user_id,
-                          incomes.c.category_id, func.coalesce(categories.c.name, "Без категорії").label("category"),
-                          incomes.c.amount, incomes.c.created_at, incomes.c.transaction_date.label("date"))
-        .select_from(incomes.outerjoin(categories, incomes.c.category_id == categories.c.id)))
+    income_rows = (
+        select(
+            incomes.c.id,
+            literal("income").label("type"),
+            incomes.c.user_id,
+            incomes.c.category_id,
+            func.coalesce(categories.c.name, "Без категорії").label("category"),
+            incomes.c.amount,
+            incomes.c.created_at,
+            incomes.c.transaction_date.label("date"),
+        )
+        .select_from(incomes.outerjoin(categories, incomes.c.category_id == categories.c.id))
+    )
     combined = union_all(expenses, income_rows).subquery()
     query = select(combined).order_by(combined.c.date.desc(), combined.c.created_at.desc(), combined.c.id.desc())
     with get_engine().connect() as connection:
