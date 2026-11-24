@@ -18,3 +18,5 @@
 .transaction-filter-expense { background: #e850501a; color: #a83f3f; }
 .transaction-filter.active { color: #174f3b; box-shadow: inset 0 0 0 2px #59b17a; }
 .transaction-filter-expense.active { color: #913333; box-shadow: inset 0 0 0 2px #e85050; }
+.category-avatar-income { background: #59b17a1a; color: #59b17a; }
+.category-avatar-expense { background: #e850501a; color: #e85050; }
