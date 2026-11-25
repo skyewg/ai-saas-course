@@ -222,7 +222,7 @@ export function TransactionForm({ onSaved }) {
 export function AnalysisButton() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [failed, setFailed] = useState(false);
+  const [analysis, setAnalysis] = useState(null);
   const pending = useRef(false);
 
   async function analyze() {
@@ -230,14 +230,18 @@ export function AnalysisButton() {
     pending.current = true;
     setLoading(true);
     setMessage('');
-    setFailed(false);
+    setAnalysis(null);
     try {
       const response = await fetch('/api/ai/analize-transactions', { method: 'POST' });
       if (!response.ok) throw new Error('Не вдалося проаналізувати транзакції. Спробуйте ще раз.');
-      await response.json();
-      setMessage('Аналіз отримано.');
+      const data = await response.json();
+      if (!data || typeof data.summary !== 'string' ||
+          !['top_expence_categories', 'risk', 'advice'].every((key) =>
+            Array.isArray(data[key]) && data[key].every((item) => typeof item === 'string'))) {
+        throw new Error('Некоректна відповідь');
+      }
+      setAnalysis(data);
     } catch {
-      setFailed(true);
       setMessage('Не вдалося проаналізувати транзакції. Спробуйте ще раз.');
     } finally {
       pending.current = false;
@@ -245,13 +249,21 @@ export function AnalysisButton() {
     }
   }
 
-  return <div className="analysis-actions">
+  return <div className="analysis-section"><div className="analysis-actions">
     <button className="analysis-button" type="button" onClick={analyze} disabled={loading} aria-busy={loading}>
       {loading && <span aria-hidden="true">⏳</span>}
       {loading ? 'Аналізуємо транзакції…' : 'Проаналізувати транзакції'}
     </button>
-    {message && <p className={failed ? 'form-error' : 'form-notice'} role={failed ? 'alert' : 'status'}>{message}</p>}
-  </div>;
+    {message && <p className="form-error" role="alert">{message}</p>}
+  </div>
+  {analysis && <div className="analysis-grid" aria-label="Результати аналізу транзакцій" aria-live="polite">
+    <article className="analysis-card"><h3>Загальний висновок</h3><p>{analysis.summary || 'Недостатньо даних для висновку.'}</p></article>
+    {[
+      ['Основні категорії витрат', analysis.top_expence_categories],
+      ['Ризики', analysis.risk],
+      ['Поради', analysis.advice],
+    ].map(([title, items]) => <article className="analysis-card" key={title}><h3>{title}</h3>{items.length ? <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>Недостатньо даних.</p>}</article>)}
+  </div>}</div>;
 }
 
 export default function App() {
