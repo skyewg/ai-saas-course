@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
+from ai_analysis import AnalysisUnavailable, analyze_transactions
 from database import delete_transaction, get_summary, get_transactions, save_web_transaction, update_transaction
 
 
@@ -101,6 +102,23 @@ async def summary_handler(request: web.Request) -> web.Response:
     return web.json_response(summary)
 
 
+async def analyze_transactions_handler(request: web.Request) -> web.Response:
+    try:
+        transactions = await asyncio.to_thread(get_transactions)
+    except Exception as error:
+        logging.error('Не вдалося отримати транзакції для аналізу: %s', type(error).__name__)
+        return web.json_response({'error': 'Не вдалося отримати транзакції.'}, status=503)
+
+    try:
+        result = await asyncio.to_thread(analyze_transactions, transactions)
+    except AnalysisUnavailable as error:
+        return web.json_response({'error': str(error)}, status=503)
+    except Exception as error:
+        logging.error('Не вдалося проаналізувати транзакції: %s', type(error).__name__)
+        return web.json_response({'error': 'Не вдалося проаналізувати транзакції.'}, status=503)
+    return web.json_response(result)
+
+
 async def delete_transaction_handler(request: web.Request) -> web.Response:
     transaction_id_text = request.match_info["id"]
     operation_types = request.query.getall("type", [])
@@ -160,6 +178,7 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/transactions/{id}", delete_transaction_handler)
     app.router.add_put("/api/transactions/{id}", update_transaction_handler)
     app.router.add_get("/api/summary", summary_handler, allow_head=False)
+    app.router.add_post('/api/ai/analize-transactions', analyze_transactions_handler)
     return app
 
 
