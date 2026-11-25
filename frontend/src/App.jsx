@@ -26,7 +26,7 @@ async function readJson(path, signal, validate) {
 
 const isAmount = (value) => typeof value === 'string' && /^-?\d+(?:\.\d{1,2})?$/.test(value);
 const validSummary = (data) => data && typeof data === 'object' &&
-  ['total_incom', 'total_expense', 'balance'].every((key) => isAmount(data[key]));
+  ['total_income', 'total_expense', 'balance'].every((key) => isAmount(data[key]));
 const validTransactions = (data) => Array.isArray(data) && data.every((item) =>
   item && typeof item === 'object' && item.id != null && item.user_id != null &&
   (item.type === 'income' || item.type === 'expense') && typeof item.category === 'string' &&
@@ -60,7 +60,7 @@ function Metric({ icon, title, value, tone, description }) {
 export function Summary({ state, onRetry }) {
   if (state.status === 'loading') return <div className="metric-grid" aria-live="polite" aria-busy="true">{[1, 2, 3].map((n) => <div className="metric skeleton-card" key={n}><span className="skeleton short" /><span className="skeleton large" /><span className="skeleton medium" /></div>)}<span className="sr-only">Завантажуємо підсумок</span></div>;
   if (state.status === 'error') return <ErrorState onRetry={onRetry} />;
-  return <div className="metric-grid"><Metric icon="wallet" title="Загальний баланс" value={state.data.balance} tone="balance" description="Доходи мінус витрати" /><Metric icon="up" title="Усього доходів" value={state.data.total_incom} tone="income" description="За весь час" /><Metric icon="down" title="Усього витрат" value={state.data.total_expense} tone="expense" description="За весь час" /></div>;
+  return <div className="metric-grid"><Metric icon="wallet" title="Загальний баланс" value={state.data.balance} tone="balance" description="Доходи мінус витрати" /><Metric icon="up" title="Усього доходів" value={state.data.total_income} tone="income" description="За весь час" /><Metric icon="down" title="Усього витрат" value={state.data.total_expense} tone="expense" description="За весь час" /></div>;
 }
 
 function validateFields(amount, category) {
@@ -187,7 +187,7 @@ export function TransactionForm({ onSaved }) {
     setNotice('');
     setSaving(true);
     try {
-      const response = await fetch('/api/transaction', {
+      const response = await fetch('/api/transactions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: values.get('type'), amount, category, date: date || localDateToday() }),
@@ -217,6 +217,41 @@ export function TransactionForm({ onSaved }) {
       <div className="form-actions"><button type="submit" className="save-button" disabled={saving}>{saving ? 'Зберігаємо…' : 'Зберегти'}</button>{notice && <p role="status" className="form-notice">{notice}</p>}{error && <p role="alert" className="form-error">{error}</p>}</div>
     </form>
   </section>;
+}
+
+export function AnalysisButton() {
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [failed, setFailed] = useState(false);
+  const pending = useRef(false);
+
+  async function analyze() {
+    if (pending.current) return;
+    pending.current = true;
+    setLoading(true);
+    setMessage('');
+    setFailed(false);
+    try {
+      const response = await fetch('/api/ai/analize-transactions', { method: 'POST' });
+      if (!response.ok) throw new Error('Не вдалося проаналізувати транзакції. Спробуйте ще раз.');
+      await response.json();
+      setMessage('Аналіз отримано.');
+    } catch {
+      setFailed(true);
+      setMessage('Не вдалося проаналізувати транзакції. Спробуйте ще раз.');
+    } finally {
+      pending.current = false;
+      setLoading(false);
+    }
+  }
+
+  return <div className="analysis-actions">
+    <button className="analysis-button" type="button" onClick={analyze} disabled={loading} aria-busy={loading}>
+      {loading && <span aria-hidden="true">⏳</span>}
+      {loading ? 'Аналізуємо транзакції…' : 'Проаналізувати транзакції'}
+    </button>
+    {message && <p className={failed ? 'form-error' : 'form-notice'} role={failed ? 'alert' : 'status'}>{message}</p>}
+  </div>;
 }
 
 export default function App() {
@@ -264,7 +299,7 @@ export default function App() {
         .catch((error) => { if (error.name !== 'AbortError') setState({ status: 'error', data: null }); });
     };
     load('/api/summary', validSummary, setSummary);
-    load('/api/transaction', validTransactions, setTransactions);
+    load('/api/transactions', validTransactions, setTransactions);
     return () => controller.abort();
   }, [requestId]);
 
@@ -275,7 +310,7 @@ export default function App() {
       <main className="content"><div className="page-heading"><div><div className="eyebrow"><span /> ФІНАНСИ ПІД КОНТРОЛЕМ</div><h1>Огляд фінансів<span>.</span></h1><p>Доходи, витрати та всі ваші транзакції в одному місці.</p></div><button className="refresh-button" onClick={refresh}><Icon name="refresh" size={17} /> Оновити дані</button></div>
         <section aria-labelledby="summary-heading"><div className="section-heading"><div><h2 id="summary-heading">Підсумок</h2><p>Загальна картина за весь час</p></div><span className="section-period">ЗА ВЕСЬ ЧАС</span></div><Summary state={summary} onRetry={refresh} /></section>
         <TransactionForm onSaved={refresh} />
-        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">Усього записів: {count}</span>}</div><div className="table-card"><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} onUpdated={refresh} /></div></section>
+        <section className="transactions-section" aria-labelledby="transactions-heading"><div className="section-heading"><div><h2 id="transactions-heading">Історія транзакцій</h2><p>Деталі доходів і витрат</p></div>{count !== null && <span className="count-badge">Усього записів: {count}</span>}</div><div className="table-card"><Transactions state={transactions} onRetry={refresh} onDelete={openDeleteDialog} onUpdated={refresh} /></div><AnalysisButton /></section>
         {selectedTransaction && <DeleteDialog transaction={selectedTransaction} deleting={deleting} error={deleteError} onCancel={() => setSelectedTransaction(null)} onConfirm={confirmDelete} />}
         <footer className="page-footer"><span>© Finansovik</span><span>Дані з вашої бази · Локальний перегляд</span></footer>
       </main>
