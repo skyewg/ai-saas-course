@@ -32,7 +32,9 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(result['top_expence_categories'], ['кава'])
         self.assertEqual(client.models.generate_content.call_count, 2)
         self.assertEqual(client.models.generate_content.call_args.kwargs['model'], 'models/gemini-example')
-        self.assertNotIn('12345', client.models.generate_content.call_args.kwargs['contents'])
+        prompt = client.models.generate_content.call_args.kwargs['contents']
+        self.assertTrue(prompt.startswith(ai_analysis.PROMPT_PATH.read_text(encoding='utf-8').rstrip() + '\n'))
+        self.assertNotIn('12345', prompt)
 
     def test_endpoint_returns_analysis_and_reports_database_failure(self):
         expected = {'summary': 'Добре', 'top_expence_categories': [], 'risk': [], 'advice': []}
